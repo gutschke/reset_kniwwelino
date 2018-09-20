@@ -24,8 +24,13 @@
 ## SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # You can edit the default URL for the Kniwwelino firmware, or you can
-# override it on the command line
-URL="${1:-https://code.kniwwelino.lu/flasher/v1.10.0/manifest.json}"
+# override it on the command line.
+#
+# The script understands two different types of JSON manifests: 1) the master
+# manifest that will be used to locate the most recent firmware release, or
+# 2) a JSON manifest that describes exactly one firmware release
+URL="${1:-https://code.kniwwelino.lu/flasher/manifest.json}"
+# URL="${1:-https://code.kniwwelino.lu/flasher/v1.10.0/manifest.json}"
 
 # By default, the script looks for the first Kniwwelino device. Alternatively,
 # the device file can be hard-coded here. It will still be validated later.
@@ -34,13 +39,29 @@ URL="${1:-https://code.kniwwelino.lu/flasher/v1.10.0/manifest.json}"
 # Uncomment to override default behavior:
 # PORT=/dev/ttyUSB0
 # PORT=!/dev/ttyUSB0
+#
+# Specify the USB product and vendor identifiers for the Kniwwelino board.
+PRODUCT=7523
+VENDOR=1a86
 
 # We need a couple of extra command line arguments to specify how our
 # hardware looks like.
-BOARD="-cd nodemcu -bf 80 -bz 4M -cb 460800"
+FLASH="-cd nodemcu -bf 80 -bz 4M -cb 460800"
+
+# We expect to find these identifiers in the JSON manifest files. Manifests can
+# contain information for more than one type of hardware, but we currently only
+# support a very specific architecture.
+NAME="Kniwwelino"
+BOARD="ESP8266"
+REVISION="ESP12"
+ALTREVISION="ESP-12"
+
+# Disable any I18N features that might interfere with the operation of this
+# script
+export LC_ALL=C
 
 # Make sure all of the required Linux tools are actually installed
-for i in curl find head jq mktemp sed seq unzip; do
+for i in curl find head jq mktemp seq unzip; do
   f="$(type -fpP "${i}" 2>/dev/null || :)"
   if ! [ -x "${f}" ]; then
     echo "Cannot find the \"${i}\" tool. You'll have to install it before running this script" >&2
@@ -57,6 +78,12 @@ trap 'trap "" ERR
 
 # When the script finishes, clean up after us
 tmp= ; trap '[ -n "${tmp}" -a -d "${tmp}" ] && rm -rf "${tmp}"' EXIT
+
+# Clean up after unexpected termination.
+trap 'trap "" INT HUP QUIT TERM
+      exec >&2
+      echo; echo Unexpected termination
+      exit 1' INT HUP QUIT TERM
 
 # Create some temporary storage for the downloaded firmware files
 tmp="$(mktemp -d)"
@@ -82,8 +109,8 @@ else
   # this way.
   for p in /sys/bus/usb/devices/*; do
     [ -r "${p}/idProduct" -a -r "${p}/idVendor" ] || continue
-    [ "x7523" = "x$(<${p}/idProduct)" -a \
-      "x1a86" = "x$(<${p}/idVendor)" ] || continue
+    [ "x${PRODUCT}" = "x$(<${p}/idProduct)" -a \
+      "x${VENDOR}" = "x$(<${p}/idVendor)" ] || continue
     dev="$(find "${p}/" -maxdepth 2 -name ttyUSB\* -printf '/dev/%f\n')"
     [ -n "${dev}" -a -r "${dev}" -a -w "${dev}" ] || continue
     [ "x${dev}" = "x${PORT}" -o -z "${PORT}" ] && break
@@ -96,22 +123,46 @@ if [ -z "${dev}" ]; then
   exit 1
 fi
 
-# All of the information about a given firmware file is contained in a JSON
-# manifest.
-version="$(echo "${URL}"|sed 's,.*/\(v[0-9.]\+\)/.*,\1,;t;d')"
-echo "Downloading firmware manifest for Kniwwelino ${version}"
-curl -o "${tmp}/manifest.json" "${URL}"
+# Check if this is a master JSON manifest, and if we can use it to locate
+# the most recent published firmware release. There should only be a single
+# entry marked as having the latest firmware.
+echo "Downloading firmware manifest"
+manifest="$(curl -o- "${URL}")"
+# Use the JSON parser to find the latest firmware version that matches our
+# NAME, BOARD, and REVISION.
+latest="$(jq -r '.options[] | select(.name == "'"${NAME}"'") | .versions[] |
+                 select(.latest == true and .board == "'"${BOARD}"'" and
+                 (.revision == "'"${REVISION}"'" or
+                  .revision == "'"${ALTREVISION}"'"))' \
+          <<<"${manifest}" 2>/dev/null || :)"
+if [ -n "${latest}" ]; then
+  # Now download the JSON manifest for the firmware referenced from the master
+  # manifest.
+  version="$(jq -r '.version' <<<"${latest}" 2>/dev/null || :)"
+  url="$(jq -r '.manifest' <<<"${latest}" 2>/dev/null || :)"
+  if [ -z "${url}" ]; then
+    echo "Cannot find a URL for the latest firmware ${version}" >&2
+    exit 1
+  fi
+  echo "Downloading firmware manifest for Kniwwelino ${version}"
+  manifest="$(curl -o- "${url}")"
+else
+  # This was already a manifest for a specific firmware release.
+  version="$(jq -r '.version' <<<"${manifest}" 2>/dev/null || :)"
+fi
 
 # Verify that what we downloaded was in fact a valid manifest file describing
-# a Kniwwelino board.
+# a Kniwwelino board. Make sure the NAME, BOARD, REVISION and version number
+# have the expected values.
 echo "Validating JSON manifest"
-url="$(jq -r '.download' <"${tmp}/manifest.json")"
-if  ! [[ "x${url}" =~ ^"xhttp" ]] ||
-    [ "x$(jq -r '.name' <"${tmp}/manifest.json" 2>/dev/null)" != 'xKniwwelino' -o \
-       \( -n "${version}" -a \
-          "x$(jq -r '.version' <"${tmp}/manifest.json" 2>/dev/null)" != "x${version#v}" \) -a \
-       "x$(jq -r '.board' <"${tmp}/manifest.json" 2>/dev/null)" != 'xESP8266' -o \
-       "x$(jq -r '.revision' <"${tmp}/manifest.json" 2>/dev/null)" != 'xESP-12' ]; then
+manifest="$(jq -r 'select(.name == "'"${NAME}"'" and .board == "'"${BOARD}"'" and
+                          (.revision == "'"${REVISION}"'" or
+                           .revision == "'"${ALTREVISION}"'") and
+                          .version != "" and .version == "'"${version}"'")' \
+            <<<"${manifest}" 2>/dev/null || :)"
+# Retrieve the URL for the actual firmware image file.
+url="$(jq -r '.download' <<<"${manifest}" 2>/dev/null || :)"
+if  ! [[ "x${url}" =~ ^"xhttp" ]]; then
   echo "JSON data does not appear to match a known firmware description" >&2
   exit 1
 fi
@@ -128,7 +179,7 @@ while :; do
       eval json_${BASH_REMATCH[1]}'=( '\${json_${BASH_REMATCH[1]}[@]}' '\'${BASH_REMATCH[2]}\'' )'
     fi
   done
-done < <(jq -r '.flash[]' "${tmp}/manifest.json")
+done < <(jq -r '.flash[]' <<<"${manifest}")
 
 # Firmware is packed into a ZIP file that contains all of the separate
 # components.
@@ -151,7 +202,7 @@ echo "Flashing firmware ${version}"
 for i in $(seq 0 $((${#json_path[@]}-1))); do
   p="${json_path[${i}]}"
   a="${json_address[${i}]}"
-  "${esptool}" ${BOARD} -cp "${dev}" -ca "${a}" -cf "${tmp}/${p}"
+  "${esptool}" ${FLASH} -cp "${dev}" -ca "${a}" -cf "${tmp}/${p}"
 done
 
 # All done
