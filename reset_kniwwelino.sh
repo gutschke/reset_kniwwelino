@@ -36,9 +36,12 @@ URL="${1:-https://code.kniwwelino.lu/flasher/manifest.json}"
 # the device file can be hard-coded here. It will still be validated later.
 # If the PORT starts with "!", then validation is skipped.
 #
+# Multiple different locations for the PORT can be separated by colons.
+#
 # Uncomment to override default behavior:
 # PORT=/dev/ttyUSB0
 # PORT=!/dev/ttyUSB0
+PORT="${PORT:-:!/dev/ttyUSB0:!/dev/cu.wchusbserial1410}"
 #
 # Specify the USB product and vendor identifiers for the Kniwwelino board.
 PRODUCT=7523
@@ -89,34 +92,40 @@ trap 'trap "" INT HUP QUIT TERM
 tmp="$(mktemp -d)"
 
 # Locate the tool that is needed to flash the Kniwwelino. It is part of the
-# Arduino IDE. If this script cannot locate the "esptool", reinstall the
-# development environment and make sure that you have followed the instruction
-# for how to enable the Kniwwelino board type.
-esptool="$(find ~/.arduino15 -type f -perm /0111 -name esptool 2>/dev/null |
+# Arduino and the PlatformIO IDE. If this script cannot locate the "esptool",
+# reinstall the development environment and make sure that you have followed the
+# instructions for how to enable the Kniwwelino board type.
+esptool="$(find ~/.arduino15 ~/.platformio -type f -perm /0111 -name esptool 2>/dev/null |
            sort -nr | head -n1)"
 if ! [ -x "${esptool}" ]; then
-  echo "Cannot find \"esptool\" for flashing Kniwwelino; re-install Arduino support" >&2
+  echo "Cannot find \"esptool\" for flashing Kniwwelino; re-install Arduino or PlatformIO support" >&2
   exit
 fi
 
 # Check if we found the correct USB port
-if [[ "x${PORT}" =~ ^"x!" ]]; then
-  dev="${PORT#!}"
-else
-  dev=
-  # Scan the USB subsystem for a device that matches 1a86:7523. You
-  # can use "lsbusb" to verify that your Kniwwelino identifies itself
-  # this way.
-  for p in /sys/bus/usb/devices/*; do
-    [ -r "${p}/idProduct" -a -r "${p}/idVendor" ] || continue
-    [ "x${PRODUCT}" = "x$(<${p}/idProduct)" -a \
-      "x${VENDOR}" = "x$(<${p}/idVendor)" ] || continue
-    dev="$(find "${p}/" -maxdepth 2 -name ttyUSB\* -printf '/dev/%f\n')"
-    [ -n "${dev}" -a -r "${dev}" -a -w "${dev}" ] || continue
-    [ "x${dev}" = "x${PORT}" -o -z "${PORT}" ] && break
+IFS=: ports=(${PORT})
+for port in "${ports[@]}"; do
+  if [[ "x${port}" =~ ^"x!" ]]; then
+    if [ -r "${port#!}" -a -w "${port#!}" ]; then
+      dev="${port#!}"
+      break
+    fi
+  else
     dev=
-  done
-fi
+    # Scan the USB subsystem for a device that matches 1a86:7523. You
+    # can use "lsbusb" to verify that your Kniwwelino identifies itself
+    # this way.
+    for p in /sys/bus/usb/devices/*; do
+      [ -r "${p}/idProduct" -a -r "${p}/idVendor" ] || continue
+      [ "x${PRODUCT}" = "x$(<${p}/idProduct)" -a \
+        "x${VENDOR}" = "x$(<${p}/idVendor)" ] || continue
+      dev="$(find "${p}/" -maxdepth 2 -name ttyUSB\* -printf '/dev/%f\n')"
+      [ -n "${dev}" -a -r "${dev}" -a -w "${dev}" ] || continue
+      [ "x${dev}" = "x${port}" -o -z "${port}" ] && break 2
+      dev=
+    done
+  fi
+done
 if [ -z "${dev}" ]; then
   echo "Cannot find a suitable serial port to talk to the Kniwwelino; did you plug it in?" >&2
   [[ "$(id -Gn)" =~ dialout ]] || echo "Maybe you need to be in the \"dialout\" user group?" >&2
