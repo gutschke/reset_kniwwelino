@@ -38,7 +38,8 @@ URL="${1:-https://code.kniwwelino.lu/flasher/manifest.json}"
 #
 # Uncomment to override default behavior:
 # PORT=/dev/ttyUSB0
-# PORT=!/dev/ttyUSB0
+# PORT=!/dev/cu.wchusbserial1410
+PORT=!/dev/cu.wchusbserial1420
 #
 # Specify the USB product and vendor identifiers for the Kniwwelino board.
 PRODUCT=7523
@@ -89,10 +90,10 @@ trap 'trap "" INT HUP QUIT TERM
 tmp="$(mktemp -d)"
 
 # Locate the tool that is needed to flash the Kniwwelino. It is part of the
-# Arduino IDE. If this script cannot locate the "esptool", reinstall the
+# platformio CLI. If this script cannot locate the "esptool", reinstall the
 # development environment and make sure that you have followed the instruction
 # for how to enable the Kniwwelino board type.
-esptool="$(find ~/.arduino15 -type f -perm /0111 -name esptool 2>/dev/null |
+esptool="$(find ~/.platformio/ -type f -name esptool 2>/dev/null |
            sort -nr | head -n1)"
 if ! [ -x "${esptool}" ]; then
   echo "Cannot find \"esptool\" for flashing Kniwwelino; re-install Arduino support" >&2
