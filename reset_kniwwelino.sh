@@ -95,7 +95,8 @@ tmp="$(mktemp -d)"
 # Arduino and the PlatformIO IDE. If this script cannot locate the "esptool",
 # reinstall the development environment and make sure that you have followed the
 # instructions for how to enable the Kniwwelino board type.
-esptool="$(find ~/.arduino15 ~/.platformio -type f -perm /0111 -name esptool 2>/dev/null |
+find -maxdepth 0 -perm /1 >&/dev/null && perm="/0111" || perm="+0111"
+esptool="$(find ~/.arduino15 ~/.platformio -type f -perm "${perm}" -name esptool 2>/dev/null |
            sort -nr | head -n1)"
 if ! [ -x "${esptool}" ]; then
   echo "Cannot find \"esptool\" for flashing Kniwwelino; re-install Arduino or PlatformIO support" >&2
